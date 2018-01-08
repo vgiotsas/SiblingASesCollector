@@ -27,6 +27,8 @@ import java.util.stream.Collectors;
 
 public class SiblingASCollector{
     private final String USER_AGENT = "Mozilla/5.0";
+    private Map<Integer, List<Integer>> pdbSiblings = new HashMap<>();
+    private Map<Integer, List<Integer>> v6LaunchSiblings = new HashMap<>();
 
     /**
      * The main method that collects and outputs the PeeringDB data
@@ -35,22 +37,45 @@ public class SiblingASCollector{
      */
     public static void main(String[] args) throws Exception{
         SiblingASCollector parser = new SiblingASCollector();
-        String pdb_url = "https://www.peeringdb.com/api/net";
-        ArrayList<String> pdb_response = parser.sendGet(pdb_url);
+        String pdbUrl = "https://www.peeringdb.com/api/net";
+        String v6DayUrl = "http://worldipv6launch.appspot.com/asns.txt";
+        ArrayList<String> pdbResponse = parser.sendGet(pdbUrl);
+        ArrayList<String> v6dayResponse = parser.sendGet(v6DayUrl);
 
-        JSONObject pdb_data = parser.parseJson(String.join("", pdb_response));
-        HashMap<Integer, ArrayList<Integer>> org2ASN = parser.parsePdbData(pdb_data);
+        JSONObject pdbData = parser.parseJson(String.join("", pdbResponse));
+        parser.pdbSiblings = parser.parsePdbData(pdbData);
+        parser.v6LaunchSiblings = parser.parseV6DayData(v6dayResponse);
+        parser.mergeSiblings();
 
         DateFormat dateFormat = new SimpleDateFormat("yyyyMMdd");
         Date date = new Date();
 
         FileWriter writer = new FileWriter("SiblingASNs_"+dateFormat.format(date)+".txt");
-        for(Integer orgId: org2ASN.keySet()) {
-            if (org2ASN.get(orgId).size() > 1) {
-                String ASNString = org2ASN.get(orgId).stream().map(Object::toString)
+        for(Integer orgId: parser.pdbSiblings.keySet()) {
+            if (parser.pdbSiblings.get(orgId).size() > 1) {
+                Set<Integer> siblingsSet = new HashSet<>(parser.pdbSiblings.get(orgId));
+                String ASNString = siblingsSet.stream().map(Object::toString)
                         .collect(Collectors.joining(" "));
 
                 writer.write(ASNString + "\n");
+            }
+        }
+
+        Set<Integer> printedASNs = new HashSet<>();
+        for(Integer key: parser.v6LaunchSiblings.keySet()){
+            System.out.println(key);
+            if (!printedASNs.contains(key)) {
+                StringBuilder ASNString = new StringBuilder();
+                for (Integer asn: parser.v6LaunchSiblings.get(key)){
+                    printedASNs.add(asn);
+                    if (ASNString.length() == 0){
+                        ASNString.append(asn);
+                    }
+                    else {
+                        ASNString.append(" ").append(asn);
+                    }
+                }
+                writer.write(ASNString.toString() + "\n");
             }
         }
         writer.close();
@@ -108,12 +133,12 @@ public class SiblingASCollector{
     }
 
     /**
-     * Parse the PeeringDB JSON response to extract and return the ASN to Org ID mapping
+     * Parses the PeeringDB JSON response to extract and return the ASN to Org ID mapping
      * @param pdbResponse The JSON response from the PeeringDB API
      * @return HashMap<Integer, ArrayList<Integer>> The mapping between organizations and ASNs under each organization
      */
-    private HashMap<Integer, ArrayList<Integer>> parsePdbData(@NotNull JSONObject pdbResponse){
-        HashMap<Integer, ArrayList<Integer>> org2ASN = new HashMap<>();
+    private HashMap<Integer, List<Integer>> parsePdbData(@NotNull JSONObject pdbResponse){
+        HashMap<Integer, List<Integer>> org2ASN = new HashMap<>();
         JSONArray nets_array = (JSONArray) pdbResponse.get("data");
         if (nets_array != null){
             for (Object obj : nets_array) {
@@ -122,8 +147,9 @@ public class SiblingASCollector{
 
                     Integer asn = (int) (long) jsonObj.get("asn");
                     Integer orgId = (int) (long) jsonObj.get("org_id");
+                    //String
                     if (!org2ASN.containsKey(orgId)) {
-                        org2ASN.put(orgId, new ArrayList<Integer>());
+                        org2ASN.put(orgId, new ArrayList<>());
                     }
                     org2ASN.get(orgId).add(asn);
                 }
@@ -131,5 +157,49 @@ public class SiblingASCollector{
         }
 
         return org2ASN;
+    }
+
+    /**
+     * Parses the list of ASNs from the World IPv6 Launch site to extract self-reported sibling ASNs
+     * @param lines The lines obtained by querying the World IPv6 launch page of participating ASNs
+     */
+    private HashMap<Integer, List<Integer>> parseV6DayData(@NotNull ArrayList<String> lines){
+        HashMap<Integer, List<Integer>> asnSiblings = new HashMap<>();
+        for (String line: lines){
+            String[] lf = line.split("\\|")[0].split(",");
+            if (lf.length > 1){
+                for (String aLf : lf) {
+                    Integer key = Integer.parseInt(aLf);
+                    List<Integer> siblings = Arrays.stream(lf).map(Integer::valueOf).collect(Collectors.toList());
+                    asnSiblings.put(key, siblings);
+                }
+            }
+        }
+
+        return asnSiblings;
+    }
+
+    /**
+     * Takes the siblings collected by each different data source and merges them in a single dataset
+     */
+    private void mergeSiblings(){
+        for (Integer orgId: pdbSiblings.keySet()){
+            List<Integer> commonSiblings = new LinkedList<>();
+            for (Integer asn: pdbSiblings.get(orgId)) {
+                if (v6LaunchSiblings.containsKey(asn)) {
+                    commonSiblings = v6LaunchSiblings.get(asn);
+                    break;
+                }
+            }
+            // if the two sets of sibling ASNs contain a common ASN, merge them
+            if (commonSiblings.size() > 0){
+                for (Integer asn: commonSiblings){
+                    // Delete the siblings from the v6Lanuch dataset to avoid duplicates
+                    v6LaunchSiblings.remove(asn);
+                    // Add the ASN to the PeeringDB dataset
+                    pdbSiblings.get(orgId).add(asn);
+                }
+            }
+        }
     }
 }
