@@ -27,9 +27,12 @@ import java.util.stream.Collectors;
 
 public class SiblingASCollector{
     private final String USER_AGENT = "Mozilla/5.0";
+    //
     private Map<Integer, List<Integer>> pdbSiblings = new HashMap<>();
     private Map<Integer, List<Integer>> v6LaunchSiblings = new HashMap<>();
+    private Map<String, List<Integer>> opqIDSiblings = new HashMap<>();
 
+    private Map<Integer, String> rirASNOpqIds = new HashMap<>();
     /**
      * The main method that collects and outputs the PeeringDB data
      * @param args Unused
@@ -45,6 +48,7 @@ public class SiblingASCollector{
         JSONObject pdbData = parser.parseJson(String.join("", pdbResponse));
         parser.pdbSiblings = parser.parsePdbData(pdbData);
         parser.v6LaunchSiblings = parser.parseV6DayData(v6dayResponse);
+        parser.getASNDelegations();
         parser.mergeSiblings();
 
         DateFormat dateFormat = new SimpleDateFormat("yyyyMMdd");
@@ -63,7 +67,6 @@ public class SiblingASCollector{
 
         Set<Integer> printedASNs = new HashSet<>();
         for(Integer key: parser.v6LaunchSiblings.keySet()){
-            System.out.println(key);
             if (!printedASNs.contains(key)) {
                 StringBuilder ASNString = new StringBuilder();
                 for (Integer asn: parser.v6LaunchSiblings.get(key)){
@@ -77,6 +80,13 @@ public class SiblingASCollector{
                 }
                 writer.write(ASNString.toString() + "\n");
             }
+        }
+
+        for (String key: parser.opqIDSiblings.keySet()){
+            Set<Integer> siblingsSet = new HashSet<>(parser.opqIDSiblings.get(key));
+            String ASNString = siblingsSet.stream().map(Object::toString)
+                    .collect(Collectors.joining(" "));
+            writer.write(ASNString + "\n");
         }
         writer.close();
     }
@@ -191,13 +201,81 @@ public class SiblingASCollector{
                     break;
                 }
             }
+
             // if the two sets of sibling ASNs contain a common ASN, merge them
-            if (commonSiblings.size() > 0){
-                for (Integer asn: commonSiblings){
+            if (commonSiblings.size() > 0) {
+                for (Integer asn : commonSiblings) {
                     // Delete the siblings from the v6Lanuch dataset to avoid duplicates
                     v6LaunchSiblings.remove(asn);
                     // Add the ASN to the PeeringDB dataset
                     pdbSiblings.get(orgId).add(asn);
+                }
+            }
+
+            // Merge PDB siblings with those inferred from the Opaque IDs of extended RIRs
+            List<Integer> intersection_pdb = new ArrayList<>(pdbSiblings.get(orgId));
+            intersection_pdb.retainAll(rirASNOpqIds.keySet());
+            if (intersection_pdb.size() > 0){
+                for (Integer common_asn: intersection_pdb){
+                    String opqId = rirASNOpqIds.get(common_asn);
+                    try{
+                        pdbSiblings.get(orgId).addAll(opqIDSiblings.get(opqId));
+                    }catch (java.lang.NullPointerException ex){
+                        continue;
+                    }
+                    System.out.println(opqId);
+                    opqIDSiblings.remove(opqId);
+                }
+            }
+        }
+
+        // Merge the siblings inferred from the Opaque IDs of extended RIRs with those from the IPv6 Launch day
+        for (String opqId: opqIDSiblings.keySet()){
+            List<Integer> intersection_v6launch = new ArrayList<>(opqIDSiblings.get(opqId));
+            intersection_v6launch.retainAll(v6LaunchSiblings.keySet());
+            if (intersection_v6launch.size() > 0){
+                Integer common_asn = intersection_v6launch.get(0);
+                opqIDSiblings.get(opqId).addAll(v6LaunchSiblings.get(common_asn));
+                v6LaunchSiblings.keySet().removeAll(v6LaunchSiblings.get(common_asn));
+            }
+        }
+    }
+
+    /***
+     * Parses the extended RIR delegation files for ASN assignments to organizations
+     * with the same Opaque ID.
+     * @throws Exception
+     */
+    private void getASNDelegations() throws Exception {
+        String[] rirURLs = {"http://ftp.ripe.net/pub/stats/ripencc/delegated-ripencc-extended-latest",
+                            "http://ftp.ripe.net/pub/stats/lacnic/delegated-lacnic-extended-latest",
+                            "http://ftp.ripe.net/pub/stats/arin/delegated-arin-extended-latest",
+                            "http://ftp.ripe.net/pub/stats/apnic/delegated-apnic-extended-latest",
+                            "http://ftp.ripe.net/pub/stats/afrinic/delegated-afrinic-extended-latest"};
+        for (String url: rirURLs){
+            ArrayList<String> delegationsResponse = this.sendGet(url);
+            for (String line: delegationsResponse){
+                String[] lf = line.split("\\|");
+                if (lf.length > 6 && lf[2].equals("asn")){
+                    String opqID = lf[lf.length - 1];
+                    if (!opqIDSiblings.containsKey(opqID)){
+                        opqIDSiblings.put(opqID, new ArrayList<>());
+                    }
+                    opqIDSiblings.get(opqID).add(Integer.parseInt(lf[3]));
+                }
+            }
+        }
+
+        // Remove Opaque IDs with only one ASN since they don't have have sibling ASNs
+        //opqIDSiblings.entrySet().removeIf(entry -> entry.getValue().size() < 2);
+        Iterator<Map.Entry<String,List<Integer>>> iter = opqIDSiblings.entrySet().iterator();
+        while (iter.hasNext()) {
+            Map.Entry<String,List<Integer>> entry = iter.next();
+            if (entry.getValue().size() < 2){
+                iter.remove();
+            }else{
+                for (Integer asn: entry.getValue()) {
+                    rirASNOpqIds.put(asn, entry.getKey());
                 }
             }
         }
