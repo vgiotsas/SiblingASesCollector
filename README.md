@@ -30,3 +30,26 @@ RIRs. For instance, consider the case of Limelight networks:
 
   12411||LLNW-GCC|ORG-LNI1-RIPE|RIPE
   60261||LLNW-AE|ORG-LNI1-RIPE|RIPE
+  
+  ## Compilation Instructions
+  
+  Below we provide installation instructions tested for Ubuntu 16.04.2 (xenial) withn Open KDK 1.8
+  
+  1. Install java JDK
+  
+  `sudo apt install default-jdk`
+  
+  2. Set the `JAVA_HOME` variable
+  
+  `export JAVA_HOME=/usr/lib/jvm/default-java/`
+  
+  3. [Install maven](https://maven.apache.org/install.html)
+  
+  `sudo apt install maven`
+  
+  4. Build and package the sources
+  
+  Navigate to the root directory (same directory that contains the `pom.xml` file and run:
+  
+  `mvn compile`
+  `mvn package`
